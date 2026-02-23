@@ -45,11 +45,13 @@ export const packData = (mazeData) => {
   bytes.push(...twoBitsPacked);
 
   const s = String.fromCharCode(...bytes);
-  return btoa(s);
+  // Use URL-safe base64 encoding
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_");
 };
 
 export const unpackData = (compressedData) => {
-  const byteString = atob(compressedData);
+  const input = compressedData.replace(/-/g, "+").replace(/_/g, "/");
+  const byteString = atob(input);
   const bytes = new Uint8Array(byteString.length);
   for (let i = 0; i < byteString.length; i++) {
     bytes[i] = byteString.charCodeAt(i);

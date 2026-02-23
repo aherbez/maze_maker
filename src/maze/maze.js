@@ -1,7 +1,17 @@
+import { config } from "../config.js";
+import { NORTH, EAST, SOUTH, WEST } from "../constants.js";
+
+export const MazeEvents = {
+  MazeDataUpdated: "mazeDataUpdated",
+  MazeSizeUpdated: "mazeSizeUpdated",
+};
+
 export class MazeCell {
-  constructor(x, y) {
+  constructor(x, y, cellWidth, cellHeight) {
     this.x = x;
     this.y = y;
+    this.cellWidth = cellWidth;
+    this.cellHeight = cellHeight;
     // each cell is intialized with no exits
     // this makes it easier to use a variety of
     // maze generation algorithms that act by carving paths between cells
@@ -18,13 +28,19 @@ export class MazeCell {
         switch (dir) {
           case EAST:
             // Draw east wall
-            ctx.moveTo(cellWidth, -config.wallThickness / 2);
-            ctx.lineTo(cellWidth, cellHeight + config.wallThickness / 2);
+            ctx.moveTo(this.cellWidth, -config.wallThickness / 2);
+            ctx.lineTo(
+              this.cellWidth,
+              this.cellHeight + config.wallThickness / 2,
+            );
             break;
           case SOUTH:
             // Draw south wall
-            ctx.moveTo(-config.wallThickness / 2, cellHeight);
-            ctx.lineTo(cellWidth + config.wallThickness / 2, cellHeight);
+            ctx.moveTo(-config.wallThickness / 2, this.cellHeight);
+            ctx.lineTo(
+              this.cellWidth + config.wallThickness / 2,
+              this.cellHeight,
+            );
             break;
         }
       }
@@ -46,16 +62,33 @@ export class Maze {
     for (let y = 0; y < this.cellsY; y++) {
       const row = [];
       for (let x = 0; x < this.cellsX; x++) {
-        const newCell = new MazeCell(x, y);
+        const newCell = new MazeCell(x, y, this.cellWidth, this.cellHeight);
         row.push(newCell);
       }
       this.cells.push(row);
     }
   }
 
+  setSize(cellsX, cellsY) {
+    this.cellsX = cellsX;
+    this.cellsY = cellsY;
+
+    this.cellWidth = (config.canvasWidth - config.margin * 2) / this.cellsX;
+    this.cellHeight = (config.canvasHeight - config.margin * 2) / this.cellsY;
+
+    this.start = { x: 0, y: 0, dir: WEST };
+    this.exit = { x: this.cellsX - 1, y: this.cellsY - 1, dir: EAST };
+
+    this.initCells();
+  }
+
   initFromData(mazeData) {
     this.cellsX = mazeData.cells[0].length;
     this.cellsY = mazeData.cells.length;
+
+    this.cellWidth = (config.canvasWidth - config.margin * 2) / this.cellsX;
+    this.cellHeight = (config.canvasHeight - config.margin * 2) / this.cellsY;
+
     this.initCells();
 
     // carve paths based on maze data
@@ -92,6 +125,29 @@ export class Maze {
 
   get startLocation() {
     return [this.start.x, this.start.y];
+  }
+
+  get exitLocation() {
+    return [this.exit.x, this.exit.y];
+  }
+
+  get mazeData() {
+    const data = {};
+    data.start = [this.start.x, this.start.y, this.start.dir];
+    data.exit = [this.exit.x, this.exit.y, this.exit.dir];
+    data.cells = this.cells.map((row) =>
+      row.map((cell) => {
+        let cellValue = 0;
+        if (!cell.exits[EAST]) {
+          cellValue |= 1;
+        }
+        if (!cell.exits[SOUTH]) {
+          cellValue |= 2;
+        }
+        return cellValue;
+      }),
+    );
+    return data;
   }
 
   getCell(x, y) {
@@ -135,6 +191,63 @@ export class Maze {
     }
   }
 
+  addWall(x, y, dir) {
+    const cell = this.getCell(x, y);
+    if (!cell) {
+      return;
+    }
+    cell.exits[dir] = false;
+    const reverseDir = (dir + 2) % 4;
+    const neighbor = this.getNeighbor(cell, dir);
+    if (neighbor) {
+      neighbor.exits[reverseDir] = false;
+    }
+  }
+
+  toggleWall(x, y, dir) {
+    const cell = this.getCell(x, y);
+    if (!cell) {
+      return;
+    }
+    const hasWall = !cell.exits[dir];
+    if (hasWall) {
+      this.carvePath(x, y, dir);
+    } else {
+      this.addWall(x, y, dir);
+    }
+
+    // emit data updated event
+    const event = new CustomEvent(MazeEvents.MazeDataUpdated, {
+      detail: { mazeData: this.mazeData },
+    });
+    window.dispatchEvent(event);
+  }
+
+  handleWallClick(x, y) {
+    const mazeX = x - (this.cellWidth - 20);
+    const mazeY = y - (this.cellHeight - 20);
+
+    let cellX = Math.floor(mazeX / this.cellWidth);
+    let cellY = Math.floor(mazeY / this.cellHeight);
+
+    const deltaX = Math.abs(mazeX - cellX * this.cellWidth);
+    const deltaY = Math.abs(mazeY - cellY * this.cellHeight);
+
+    if (deltaX < 40 && deltaY < 40) {
+      console.log("Clicked on a corner, ambiguous intent");
+    } else if (deltaX > 40 && deltaY > 40) {
+      console.log("Clicked inside cell, not on a wall");
+    } else {
+      if (deltaX < deltaY) {
+        cellY = Math.floor((y - config.margin) / this.cellHeight);
+        this.toggleWall(cellX, cellY, EAST);
+      } else {
+        cellX = Math.floor((x - config.margin) / this.cellWidth);
+        this.toggleWall(cellX, cellY, SOUTH);
+      }
+    }
+  }
+
   /**
    * Overlays a polygon on top of the exterior wall at
    * the given cell in order to indicate the entrance/exit
@@ -148,18 +261,39 @@ export class Maze {
     ctx.fillStyle = config.mazeColor;
 
     // move to center of cell
-    ctx.translate((x + 0.5) * cellWidth, (y + 0.5) * cellHeight);
+    ctx.translate((x + 0.5) * this.cellWidth, (y + 0.5) * this.cellHeight);
 
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.rotate(direction * (Math.PI / 2));
     ctx.rect(
-      -cellWidth / 2 + config.wallThickness / 2,
-      -cellHeight / 2 - config.wallThickness / 2 - 2,
-      cellWidth - config.wallThickness,
+      -this.cellWidth / 2 + config.wallThickness / 2,
+      -this.cellHeight / 2 - config.wallThickness / 2 - 2,
+      this.cellWidth - config.wallThickness,
       config.wallThickness + 4,
     );
     ctx.fill();
+    ctx.restore();
+  }
+
+  drawGrid(ctx) {
+    ctx.save();
+    ctx.strokeStyle = config.gridColor;
+    ctx.lineWidth = 1;
+
+    for (let x = 0; x <= this.cellsX; x++) {
+      ctx.beginPath();
+      ctx.moveTo(x * this.cellWidth, 0);
+      ctx.lineTo(x * this.cellWidth, this.cellsY * this.cellHeight);
+      ctx.stroke();
+    }
+
+    for (let y = 0; y <= this.cellsY; y++) {
+      ctx.beginPath();
+      ctx.moveTo(0, y * this.cellHeight);
+      ctx.lineTo(this.cellsX * this.cellWidth, y * this.cellHeight);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -169,10 +303,12 @@ export class Maze {
     ctx.strokeStyle = config.wallColor;
     ctx.lineWidth = config.wallThickness;
     ctx.beginPath();
-    ctx.rect(0, 0, cellWidth * this.cellsX, cellHeight * this.cellsY);
+    ctx.rect(0, 0, this.cellWidth * this.cellsX, this.cellHeight * this.cellsY);
     ctx.fill();
     ctx.stroke();
     ctx.restore();
+
+    this.drawGrid(ctx);
 
     ctx.save();
 
@@ -180,7 +316,7 @@ export class Maze {
       for (let x = 0; x < this.cellsX; x++) {
         ctx.save();
         const cell = this.cells[y][x];
-        ctx.translate(x * cellWidth, y * cellHeight);
+        ctx.translate(x * this.cellWidth, y * this.cellHeight);
         cell.draw(ctx);
         ctx.restore();
       }
